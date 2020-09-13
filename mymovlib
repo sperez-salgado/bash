@@ -1,0 +1,905 @@
+#!/bin/bash
+#
+# Description: This scripts automatizes the task of fixing my movie library,
+# It requires some external tools, so watch out.
+# Author: Salvador Perez-Salgado
+# Create Date: apr 2019
+#################
+ # Version
+VER="1.0.4 (stable)"
+# Modified Date: jun 3 2019
+# Modification:  - Added comments on fix_audio function usage.
+#				 - Fixed bash quotes usage "String""$VAR""More string" all around
+#				 - Replaced ! [ -f $VAR ] with [ -n $VAR ]
+#				 - All variable declarations were separated from the initial assignment
+#				 - Vonchis helped me notice that 6 channels was not considered in the audio
+#				   channels matches. Now it is and 6 channels are downmixed to Stereo
+# Version: 1.0.1 (stable)
+# Modified Date: jun 19 2019
+# Modification:  - Added language code check when manually input
+# Version: 1.0.2 (stable)
+# Modified Date: jul 13 2019
+# Modification:  - Fixed cover processing. Covers are now 600x960 and 960x600.
+#				 - Covers are made baseline with jpegtran
+#				 - Small covers removed.
+# Version: 1.0.3 (stable)
+# Modified Date: oct 07 2019
+# Modification:  - Added automatic chapter extraction from source file when no chapter.txt
+#				   file is specified.
+# Version: 1.0.4 (stable)
+# Modified Date: jan 04 2020
+# Modification:  - Added video encoding settings and functionality.
+#				 - Added logging fuction.
+#################
+
+
+# Default global stuff
+
+PROG="mymovlib"
+
+COVERS=''
+CHAPTER=''
+VIDEO_TRACK=''
+AUDIO_TRACKS=''
+SUB_TRACKS=''
+
+# Sreen colors
+RED=$(tput setaf 1)
+GREEN=$(tput setaf 2)
+NORMAL=$(tput sgr0)
+
+# Dependency list of external tools
+DEPS="ffmpeg mkvmerge convert grep sed jpegtran"
+
+# Deafult list of languages in code ISO 639-3 to be written to lang.lst
+LANGLST="# lang.lst\n#\n\
+# This file has the list of supported languages for mymovlib using ISO 639-3 codes.\n\
+# First column shows the code, the second shows the language name in English and\n\
+# the third shows the languages original names. More languages may be added if required.\n\
+# Keep column order to avoid problems. Add the new languages below the original ones.\n\
+# Visit https://iso639-3.sil.org/code_tables/639/data as reference.\n\
+Code\tName\t\tOriginal name\n\
+arc\tAramaic\t\tܐܪܡܝܐ\n\
+cmn\tChinese (mand.)\t官話\n\
+dan\tDanish\t\tDansk\n\
+deu\tGerman\t\tDeutsch\n\
+eng\tEnglish\t\tEnglish\n\
+fra\tFrench\t\tFrançais\n\
+ita\tItalian\t\tItaliano\n\
+jpn\tJapanese\t日本語\n\
+kor\tKorean\t\t한국어\n\
+myn\tMayan\t\tMaya\n\
+nah\tNahuatl\t\tNahuatl\n\
+nld\tDutch\t\tNederlands\n\
+nor\tNorwegian\tNorsk\n\
+pol\tPolish\t\tPolski\n\
+rus\tRussian\t\tрусский язык\n\
+spa\tSpanish\t\tEspañol\n\
+mul\tMultiple\tMultiple langs\n"
+
+# Functions
+
+# Tools used by other functions
+s_print() {
+	# s_print shows [ok] or [FAIL] in color at the right end of the screen
+	# when something is done.
+	# usage: s_print <length of message> <flag>
+	# flag: 0 if OK
+    #		1 if FAIL
+    ((COL = $(tput cols) - $1))
+    if [ -z "$QUIET" ]; then
+    	if [ "$2" -eq 0 ] ; then
+    		((COL = COL - 5))
+			printf '%*s%s%s%s]\n' "$COL" "[" "$GREEN" 'OK' "$NORMAL"
+    	else
+    		((COL = COL - 7))
+    		printf '%*s%s%s%s]\n' "$COL" "[" "$RED" 'FAIL' "$NORMAL"
+    	fi
+    fi
+    return
+}
+
+cmd_exists() {
+    # Checks if the given arg exists as a command
+    # usage: exists foo
+    local VAR
+	if [ -n "$1" ]; then
+		local MSG="Looking for $1..."
+    	if [ -z "$QUIET" ]; then
+    		echo -n "* $MSG"
+    	fi
+    	VAR=$(command -v "$1" 2>&1)
+    	if [ -n "$VAR" ]; then
+			s_print ${#MSG} 0
+    		echo "Found at $(which $1)"
+		else
+    		s_print ${#MSG} 1
+        	(>&2 echo -e "$PROG: $1 is not installed/accesible in your system.")
+        	exit 1
+		fi
+    fi
+    return
+}
+###################################################
+
+# General procedures
+version() {
+    echo "$PROG $VER"
+    echo "This software is free to use and modify."
+    echo "Carlos Salvador Pérez Salgado. Apr 2019."
+	exit 0
+}
+
+dohelp() {
+    # shows help information
+    echo "This scripts automatizes the task of fixing my movie library"
+	echo "usage: $PROG [OPTION] input_file 'Movie Title' year"
+    echo " "
+    echo "Mandatory arguments of long options are mandatory for short options too."
+    echo -e "  -a, --no-audio-fix\t\tdo not fix audio volume and channels."
+    echo -e "  -c, --no-covers\t\tdo not fix covers nor add cover-art."
+    echo -e "  -C, --check\t\t\tcheck for dependencies and config file."
+    echo -e "  -h, --help\t\t\tshows this screen and exits."
+	echo -e "  -l, --langs <LANGUAGES>\tsets the language of the audio streams. LANGS is 'lang1,lang2,lang3'"
+    echo -e "  -L, --lang-list\t\tshows the supported list of languages codes using ISO 639-3."
+	echo -e "  -o, --output <filename>\tsets the output filename. Default is 'Title (year).mkv'."
+	echo -e "  -p, --chap_lang <LANG>\tset the language for the chapter file."
+    echo -e "  -v, --video <VIDEOSETTING>\tencodes video to x264 (check VIDEO_SETTINGS below)."
+    echo -e "  -V, --version\t\t\tshows version infromation and exits."
+	echo " "
+    echo "LANGUAGES lang1,lang2 or lang1,lang2,lang3 arguments must be comma separated and within quotes,"
+    echo "if just a language is set in the list and there are more audio streams, it will be the first language"
+    echo "and the others will be ordered using the default set \"1st: English, 2nd: Spanish, 3rd: other.\""
+    echo "The lang codes are ISO 639-3, but not all are supported."
+    echo "Same goes for LANG of the chaper file, but here only one is allowed."
+    echo " "
+    echo "VIDEO_SETTINGS parameters and their x264 equivalence:"
+	echo "  · ffh - preset: veryfast, tune: film, crf: 18."
+	echo "  · ffs - preset: veryfast, tune: film, crf: 20."
+	echo "  · sfh - preset: slow, tune: film, crf: 18."
+	echo "  · sfs - preset: slow, tune: film, crf: 20."
+	echo "  · fah - preset: veryfast, tune: animation, crf: 18."
+	echo "  · fas - preset: veryfast, tune: animation, crf: 20."
+	echo "  · sah - preset: slow, tune: animation, crf: 18."
+	echo "  · sas - preset: slow, tune: animation, crf: 20."
+    echo "All these parameters are case sensitive"
+    echo " "
+    echo -n "Version: "
+    version
+}
+
+conf_file() {
+    local MSG="Creating empty config file at your home directory..."
+    echo -n "* $MSG"
+    mkdir -p ~/.mymovlib && \
+    echo -e "# mymovlib settings file\nquiet: false" > ~/.mymovlib/settings.cfg && \
+    echo -e "$LANGLST" > ~/.mymovlib/lang.lst && \
+    s_print ${#MSG} 0 && echo "Config file created"
+    return
+}
+
+langs() {
+    # langs will show the languages list from lang.lst
+    # If the files doesn't exist, the conf_file function is called
+	local MSG="Looking for language list file in your home directory"
+    echo -n "* $MSG"
+	if [ ! -f ~/.mymovlib/lang.lst ]; then
+		s_print ${#MSG} 1
+        echo "Language file not found."
+    	conf_file
+	else
+		s_print ${#MSG} 0
+    fi
+    if [ -z "$1" ]; then
+    	echo "This is the contents of the language list file:"
+    	cat ~/.mymovlib/lang.lst
+        exit 0
+    fi
+    return
+}
+
+check() {
+	echo "This is the first time you run $PROG or you used the -C flag."
+	echo "Checking if all dependencies are met:"
+    for i in $DEPS; do
+    	cmd_exists "$i"
+    done
+    langs 0
+    echo "If you can read this it means all checks were OK"
+    if [ -z "$1" ]; then
+    	exit 0
+    fi
+    return
+}
+
+check_flags() {
+	local TMP
+    local STR
+    local LANGS
+    local FLAG
+    local BAD
+    local j
+	if [[ -n $OUTPUT ]]; then
+    	if ! [[ $OUTPUT =~ .mkv ]]; then
+        	OUTPUT="$OUTPUT.mkv"
+    	fi
+    fi
+
+	if [[ -n $VREENC ]]; then
+        case "$VREENC" in
+            ffh ) VIDEOSET="-preset veryfast -tune film -crf 18";;
+            ffs ) VIDEOSET="-preset veryfast -tune film -crf 20";;
+			sfh ) VIDEOSET="-preset slow -tune film -crf 18";;
+			sfs ) VIDEOSET="-preset slow -tune film -crf 20";;
+			fah ) VIDEOSET="-preset veryfast -tune animation -crf 18";;
+			fas ) VIDEOSET="-preset veryfast -tune animation -crf 20";;
+			sah ) VIDEOSET="-preset slow -tune animation -crf 18";;
+			sas ) VIDEOSET="-preset slow -tune animation -crf 20";;
+            * ) (>&2 echo -e "$PROG: No video preset given. Exiting!");;
+        esac
+    fi
+
+    if [ -n $LANG_ORDER ]; then
+    	IFS=',' read -r -a TMP <<< "$LANG_ORDER"
+        LANGS="$(awk 'NR>8 {print $1}' ~/.mymovlib/lang.lst)"
+        j=0 # of it is j=1? Why?
+    	while read -r LINE; do
+    		ARRAY[j]="$LINE"
+        	(( j++ ))
+    	done <<< "$LANGS"
+        for i in "${TMP[@]}"; do
+        	FLAG="n"
+        	for STR in "${ARRAY[@]}"; do
+            	if [ "$STR" == "$i" ]; then
+                	FLAG="y"
+            	fi
+            done
+            if [ "$FLAG" == "n" ]; then
+            	BAD="$BAD$i "
+            fi
+    	done
+        if [ -n "$BAD" ]; then
+        	echo "* WARNING: At least one of the input languages was not right."
+            echo "Not a valid ISO 369-3 language code found: $BAD"
+            echo "Check the list and input the right one when asked."
+            cat ~/.mymovlib/lang.lst | awk 'NR>6 {print}'
+            echo "Enter the right language codes after the -l flag separated by commas,"
+            echo "the same order will be used for the audio tracks."
+            echo -n "-l "
+            read LANG_ORDER
+            check_flags
+        fi
+    fi
+	return
+}
+######################################################
+
+# Audio, Video, Subtitles and Covers
+# Functions directly related with the movie files
+getinfo() {
+	INFO=$(ffprobe -hide_banner -i "$INPUT" 2>&1)
+    return
+}
+
+do_covers() {
+    # Checks whether the cover art files are present or not, and fixes them if
+    # they do.
+	local F1
+    local F2
+	local MSG="Looking for cover art files: cover.jpg and cover_land.jpg..."
+    echo -n "* $MSG"
+
+	if [ ! -f cover.jpg ] || [ ! -f cover_land.jpg ]; then
+		s_print ${#MSG} 1
+		(>&2 echo -e "$PROG: at least one of the requested files was not found!")
+		exit 1
+	else
+		s_print ${#MSG} 0
+	fi
+
+	echo "* Resizing and croping to fit dimensions:"
+    mv cover.jpg old_cover.jpg
+    mv cover_land.jpg old_cover_land.jpg
+
+    echo "- Portrait cover art..."
+    convert old_cover.jpg -density 72 -resize 600x960 -background black -compose copy -gravity center -extent 600x960 new.cover.jpg
+
+	echo "- Landscape cover art..."
+    convert old_cover_land.jpg -density 72 -resize 960x600 -background black -compose copy -gravity center -extent 960x600 new.cover_land.jpg
+
+    # Make the covers baseline
+    jpegtran new.cover.jpg > cover.jpg
+    jpegtran new.cover_land.jpg > cover_land.jpg
+
+	COVERS=" --attachment-mime-type image/jpeg --attachment-name cover --attach-file cover.jpg"
+    COVERS=$COVERS" --attachment-mime-type image/jpeg --attachment-name cover_land --attach-file cover_land.jpg"
+
+    return
+}
+
+fix_audio() {
+	# Audio settings
+    # usage: fix_audio file_name.wav chan
+    # - chan is the number of channels of the audio file, as provided by ffprobe
+    if [ -f a_tmp.wav ]; then
+    	rm -f a_tmp.wav
+    fi
+    local A_TMP
+    local A_MAX
+	local AUDIO_SETS
+    local CHANS=$2
+    local F1
+    local GAIN
+	case $CHANS in
+    	*"stereo"*)
+        	unset AUDIO_SETS
+            ;;
+		*"2.1"*)
+        	AUDIO_SETS="pan=stereo|FL=0.707*FL+0.5*LFE|FR=0.707*FR+0.5*LFE"
+            ;;
+        *"5.0"*)
+#        	if [[ "$CHANS" =~ "side" ]]; then
+#             	AUDIO_SETS='-af "pan=stereo|FL=0.5*FC+0.707*FL+0.707*SL|FR=0.5*FC+0.707*FR+0.707*SR"'
+#             else
+                AUDIO_SETS="pan=stereo|FL=0.5*FC+0.707*FL+0.707*BL|FR=0.5*FC+0.707*FR+0.707*BR"
+#             fi
+            ;;
+        *"5.1"*)
+#         	if [[ "$CHANS" =~ "side" ]]; then
+#             	AUDIO_SETS='-af "pan=stereo|FL=0.5*FC+0.707*FL+0.707*SL+0.5*LFE|FR=0.5*FC+0.707*FR+0.707*SR+0.5*LFE"'
+#             else
+                AUDIO_SETS="pan=stereo|FL=0.5*FC+0.707*FL+0.707*BL+0.5*LFE|FR=0.5*FC+0.707*FR+0.707*BR+0.5*LFE"
+#             fi
+            ;;
+        *"6.0"* | *"6 channels"*)
+        	if [[ "$CHANS" =~ "front" ]]; then
+            	AUDIO_SETS="pan=stereo|FL=0.5*FLC+0.707*FL+0.707*SL|FR=0.5*FRC+0.707*FR+0.707*SR"
+            else
+                AUDIO_SETS="pan=stereo|FL=0.5*FC+0.5*BC+0.707*FL+0.707*SL|FR=0.5*FC+0.5*BC+0.707*FR+0.707*SR"
+            fi
+            ;;
+        *"6.1"*)
+        	if [[ "$CHANS" =~ "front" ]]; then
+            	AUDIO_SETS="pan=stereo|FL=0.5*FLC+0.707*FL+0.707*SL+0.5*LFE|FR=0.5*FRC+0.707*FR+0.707*SR+0.5*LFE"
+        	elif [[ "$CHANS" =~ "back" ]]; then
+                AUDIO_SETS="pan=stereo|FL=0.5*FC+0.5*BC+0.707*FL+0.707*BL+0.5*LFE|FR=0.5*FC+0.5*BC+0.707*FR+0.707*BR+0.5*LFE"
+            else
+                AUDIO_SETS="pan=stereo|FL=0.5*FC+0.5*BC+0.707*FL+0.707*SL+0.5*LFE|FR=0.5*FC+0.5*BC+0.707*FR+0.707*SR+0.5*LFE"
+            fi
+            ;;
+    esac
+    # Dowmix to stereo. Skip if it is already stereo.
+    if [ -z "$AUDIO_SETS" ]; then
+    	mv "$1" a_tmp.wav
+    else
+    	AUDIO_SETS="-af $AUDIO_SETS"
+		MSG="Downmixing to stereo..."
+        echo -n "- $MSG"
+    	ffmpeg -y -hide_banner -i "$1" -c:a pcm_s32le $AUDIO_SETS a_tmp.wav 2>> log.txt && F1=true || F1=false
+        if [ "$F1" == true ]; then
+    		s_print ${#MSG} 0
+            if [ "$LOG" != true ]; then rm -f log.txt; fi
+            rm "$1"
+        else
+        	s_print ${#MSG} 1
+        	(>&2 echo -e "$PROG: Downmixing $1 failed!\n See log.txt for more info")
+        	exit 1
+    	fi
+    fi
+    # Do a dynamic normalization first
+    MSG="Performing dynamic normalization..."
+    echo -n "- $MSG"
+    ffmpeg -y -hide_banner -i a_tmp.wav -af "dynaudnorm=f=750:g=10:r=0.7" a_tmp2.wav 2>> log.txt && F1=true || F1=false
+    if [ "$F1" == true ]; then
+    		s_print ${#MSG} 0
+            if [ "$LOG" != true ]; then rm -f log.txt; fi
+        else
+        	s_print ${#MSG} 1
+        	(>&2 echo -e "$PROG: Dynamic normalization of $1 failed!\n See log.txt for more info")
+        	exit 1
+    fi
+    rm -f a_tmp.wav && mv a_tmp2.wav a_tmp.wav
+
+    # Normalize audio the standard way if max volume is not 0 dB
+    A_TMP=$(ffmpeg -hide_banner -i a_tmp.wav -af "volumedetect" -f null /dev/null 2>&1)
+    A_MAX=$(grep max_volume <<< "$A_TMP")
+    A_MAX=${A_MAX/*: /}
+    A_MAX=${A_MAX/ */}
+    GAIN=""
+    if [[ ! "$A_MAX" =~ "0.0" ]]; then
+    	if [[ "$A_MAX" =~ "-" ]]; then
+        	GAIN="${A_MAX/-/}"dB
+        else
+        	GAIN="-$A_MAX"dB
+        fi
+	    MSG="Gain was not 0 dB, performing normalization..."
+    	echo -n "- $MSG"
+        ffmpeg -y -hide_banner -i a_tmp.wav -af "volume=$GAIN" a_tmp2.wav 2>> log.txt && F1=true || F1=false
+        if [ "$F1" == true ]; then
+    		s_print ${#MSG} 0
+            if [ "$LOG" != true ]; then rm -f log.txt; fi
+        else
+        	s_print ${#MSG} 1
+        	(>&2 echo -e "$PROG: Normalizing $1 failed!\n See log.txt for more info")
+        	exit 1
+    	fi
+
+        rm -f a_tmp.wav
+        mv a_tmp2.wav a_tmp.wav
+    fi
+
+    mv a_tmp.wav "$1"
+    return
+}
+
+audio_tracks() {
+	local TRACKS
+    local LANG
+    local CHAN
+    local STREAM
+    local F1
+    local ARRAY
+    TRACKS=$(grep Audio <<< "$INFO")
+	TRACKS=$(grep Stream <<< "$TRACKS")
+	echo "* Reading audio tracks from input:"
+    i=1
+    while read -r LINE; do
+    	ARRAY[i]="$LINE"
+        (( i++ ))
+    done <<< "$TRACKS"
+    for i in $(seq 1 "${#ARRAY[@]}"); do
+		STREAM="${ARRAY[$i]/*[0-9]:/}"
+        STREAM="${STREAM/(*/}"
+        LANG="${ARRAY[$i]/*[0-9]:[0-9](/}"
+        LANG="${LANG/)*/}"
+        CHAN="${ARRAY[$i]/*Hz, /}"
+        CHAN="${CHAN/,*/}"
+        echo "* Found audio stream $STREAM:$LANG $CHAN."
+
+        MSG="Ripping to PCM..."
+        echo -n "- $MSG"
+        ffmpeg -y -hide_banner -i "$INPUT" -map 0:"$STREAM" -vn -sn -c:a pcm_s32le "$STREAM"-"$LANG".wav 2>> log.txt && F1=true || F1=false
+
+        if [ "$F1" == true ]; then
+    		s_print ${#MSG} 0
+            if [ "$LOG" != true ]; then rm -f log.txt; fi
+        else
+        	s_print ${#MSG} 1
+        	(>&2 echo -e "$PROG: Ripping audio stream $STREAM failed!\n See log.txt for more info")
+        	exit 1
+    	fi
+
+        if [ -z "$FIX_AUDIO" ]; then
+        	fix_audio "$STREAM"-"$LANG".wav "$CHAN"
+        fi
+    done
+
+	# Encode audio to AAC
+    echo "* Encoding audio streams to AAC"
+    for i in *.wav; do
+    	MSG="Encoding $i to AAC..."
+    	echo -n "- $MSG"
+        ffmpeg -y -hide_banner -i "$i" -c aac -b:a 160k "${i/.wav/.m4a}" 2>> log.txt && F1=true || F1=false
+        if [ "$F1" == true ]; then
+    		s_print ${#MSG} 0
+            if [ "$LOG" != true ]; then rm -f log.txt; fi
+        else
+        	s_print ${#MSG} 1
+        	(>&2 echo -e "$PROG: Encoding audio stream $STREAM failed!\n See log.txt for more info")
+        	exit 1
+    	fi
+    done
+    rm -f ./*.wav
+    return
+}
+
+do_audio() {
+    local AUDIO_LANG
+    local AUDIO_STREAM
+	local EXIT
+    local F1
+    local NAME
+    local TMP
+    local TMPLANG
+	local VAR
+    audio_tracks
+    j=1
+    for i in *.m4a; do
+		if [ "$i" == "*.m4a" ]; then
+        	(>&2 echo -e "$PROG: No audio files found!\nThis is so weird, so exiting.")
+            echo "Temporary files won't be deleted"
+            exit 1
+        else
+        	AUDIO_STREAM[$j]="${i/-*/}"
+    		AUDIO_LANG[$j]="${i/*-/}"
+        	AUDIO_LANG[$j]="${AUDIO_LANG[$j]/.m4a/}"
+        	AUDIO_LANG[$j]="${AUDIO_LANG[$j]},""$(grep ${AUDIO_LANG[$j]} ~/.mymovlib/lang.lst | awk '{print $3}')"
+            (( j ++ ))
+        fi
+    done
+    j=1
+    if [[ -z $LANG_ORDER ]]; then
+    	# Use the default arrangement: 1-eng, then others
+        # Find the english track
+		for i in "${AUDIO_LANG[@]}"; do
+        	if [ "${i/,*/}" == "eng" ]; then
+            	break
+            fi
+            (( j ++ ))
+            TMPLANG="${i/,*/}"
+        done
+
+        if [ ${#AUDIO_LANG[@]} -lt $j ]; then
+        	echo "$PROG: Warning! No English audio track was found and no language order was set."
+            if [ ${#AUDIO_LANG[@]} -eq 1 ] && [ "$TMPLANG" == "und" ] ; then
+            	echo "The input has only a single Audio stream and it is undertermined (und)"
+                echo -n "Shall we consider it to be in English and resume the work [y/N]?"
+				read -r -s -n1 STOPIT
+                echo " "
+                if [[ $STOPIT =~ (y|Y) ]]; then
+                	MSG="Fixing language and resuming..."
+    				echo -n "- $MSG"
+                    j=1
+					AUDIO_LANG[$j]="eng,English"
+                    mv 1-und.m4a 1-eng.m4a 2>> log.txt && F1=true || F1=false
+
+    				if [ "$F1" == true ]; then
+    					s_print ${#MSG} 0
+    					if [ "$LOG" != true ]; then rm -f log.txt; fi
+    				else
+        				s_print ${#MSG} 1
+        				(>&2 echo -e "$PROG: Couldn't rename 1-und.m4a to 1-eng.m4a")
+        				EXIT="yes"
+    				fi
+                else
+                	EXIT="yes"
+                fi
+            else
+            	#TODO: Fix non English audio streams
+                EXIT="yes"
+            fi
+            if [ "$EXIT" == "yes" ]; then
+            	(>&2 echo -e "$PROG: Can't continue temporary files won't be deleted")
+            fi
+        fi
+        AUDIO_TRACKS="--track-name 0:""${AUDIO_LANG[$j]/*,/}"" --language 0:""${AUDIO_LANG[$j]/,*/}"" ""${AUDIO_STREAM[$j]}""-""${AUDIO_LANG[$j]/,*/}"".m4a"
+	    j=1
+        for i in "${AUDIO_LANG[@]}"; do
+        	if [ "${i/,*/}" != "eng" ]; then
+    			AUDIO_TRACKS="$AUDIO_TRACKS"" --track-name 0:""${AUDIO_LANG[$j]/*,/}"" --language 0:""${AUDIO_LANG[$j]/,*/}"" ""${AUDIO_STREAM[$j]}""-""${AUDIO_LANG[$j]/,*/}"".m4a"
+                (( j++ ))
+			fi
+		done
+    else
+    	IFS=',' read -r -a TMP <<< "$LANG_ORDER"
+		MSG="Looking for $LANG_ORDER audio files in the current folder..."
+    	echo -n "- $MSG"
+        for i in *.m4a; do
+        	ln -s "$i" "${i/*-/}"
+        done
+		for i in "${TMP[@]}"; do
+			AUDIO_LANG[$j]="$i,"$(grep "$i" ~/.mymovlib/lang.lst | awk '{print $3}')
+            if ! [ -f "$i".m4a ]; then
+            	# Fix missing language track or exit
+            	s_print ${#MSG} 1
+            	(>&2 echo -e "$PROG: No $i audio track found. Operation paused!")
+            	echo "If you want to resume hit r to continue, or any other key to exit"
+            	read -r -s -n1 x
+            	if ! [[ $x =~ (r|R) ]]; then
+        			echo -e "\n$PROG: Operation cancelled by the user."
+            		echo "Temporary files were not deleted in case that you need them"
+            		exit 1
+                fi
+                echo "- resuming..."
+            fi
+            if [ $j -eq 1 ]; then
+				AUDIO_TRACKS="--track-name 0:""${AUDIO_LANG[$j]/*,/}"" --language 0:""${AUDIO_LANG[$j]/,*/}"" ""${AUDIO_LANG[$j]/,*/}"".m4a"
+            else
+            	AUDIO_TRACKS="$AUDIO_TRACKS"" --track-name 0:""${AUDIO_LANG[$j]/*,/}"" --language 0:""${AUDIO_LANG[$j]/,*/}"" ""${AUDIO_LANG[$j]/,*/}"".m4a"
+            fi
+            (( j++ ))
+        done
+        s_print ${#MSG} 0
+    fi
+	return
+}
+
+do_video (){
+	# Extract video stream from input file
+    local MSG
+    local STREAM
+    local VCODEC
+    local VIDINFO
+    VIDINFO="$(grep Video <<< $INFO)"
+    STREAM="${VIDINFO/*#/}"
+    STREAM="${STREAM/:*/}"
+	echo "* Found video stream $STREAM."
+    if [[ -n $VREENC ]]; then
+    	VCODEC="libx264 -profile:v high -level 4.0 -vf hqdn3d $VIDEOSET"
+		MSG="Extracting and coverting to video.mp4 (it could take a lot of time)..."
+    else
+    	VCODEC="copy"
+        MSG="Extracting to video.mp4... "
+    fi
+
+    echo -n "- $MSG"
+    ffmpeg -hide_banner -y -i "$INPUT" -map_metadata -1 -map_chapters -1 -c:v $VCODEC \
+    -movflags +faststart -pix_fmt yuv420p \
+    -an -sn video.mp4 2>> log.txt && F1=true || F1=false
+
+    if [ "$F1" == true ]; then
+    	s_print ${#MSG} 0
+    	if [ "$LOG" != true ]; then rm -f log.txt; fi
+    else
+        s_print ${#MSG} 1
+        (>&2 echo -e "$PROG: Extracting/Recoding video failed!\n See log.txt for more info")
+        exit 1
+    fi
+    VIDEO_TRACK="--track-name 0:Video video.mp4"
+    return
+}
+
+do_chapt(){
+	local i
+    local TMP
+    local CHAPS
+	if [ -z "$CHLANG" ]; then
+    	CHLANG="eng"
+    fi
+	if ! [ -f chapters.txt ]; then
+    	echo "[!] Warning: No chapter file was found."
+        if [ $(grep -c Chapter <<< "$INFO") -gt 0 ]; then
+        	MSG="- Chapters data found from source, trying to create chapters.txt... "
+        	echo -n "- $MSG"
+        	ffmpeg -i "$INPUT" -f ffmetadata chapters.txt 2>> log.txt && F1=true || F1=false
+
+            if [ "$F1" == true ]; then
+                s_print ${#MSG} 0
+                if [ "$LOG" != true ]; then rm -f log.txt; fi
+            else
+                s_print ${#MSG} 1
+                (>&2 echo -e "$PROG: No chapter data could be created!\n See log.txt for more info")
+            fi
+        fi
+    fi
+    if [ -f chapters.txt ] && [[ $(grep FFMETADATA1 chapters.txt) ]]; then
+    	cp chapters.txt old_chapters.txt
+		TMP=($(grep START chapters.txt | sed 's/START=//'))
+ 		TMP2=($(grep TIMEBASE chapters.txt | sed 's/TIMEBASE=//'))
+        sed -i '1,/CHAPTER/d' chapters.txt
+        TMP3=($(grep title chapters.txt | sed 's/title=//'))
+        rm chapters.txt
+        touch chapters.txt
+ 		i=0
+ 		for LINE in "${TMP[@]}"; do
+ 			CHAPS[$i]=$(echo "${TMP[$i]}*${TMP2[$i]}" | bc -l)
+        	MSEC="${CHAPS[$i]/*./}"
+ 			MSEC="${MSEC/0*/}"
+ 			if [ -z "$MSEC" ];
+				then MSEC=0
+			fi
+			SEC=$(echo "${CHAPS[$i]/.*/} % 60" | bc)
+			MIN=$(echo "${CHAPS[$i]/.*/} / 60" | bc)
+			HRS=0
+			if [ $MIN -gt 59 ]; then
+				HRS=$(echo "$MIN / 60" | bc)
+                MIN=$(echo "$MIN % 60" | bc)
+			fi
+			MSEC=$(printf %03d "$MSEC")
+			SEC=$(printf %02d "$SEC")
+			MIN=$(printf %02d "$MIN")
+            j=$(printf %02d $(( i+1 )))
+            echo "CHAPTER""$j""=""$HRS"":""$MIN"":""$SEC"".""$MSEC" >> chapters.txt
+            echo "CHAPTER""$j""NAME=""${TMP3[$i]}" >> chapters.txt
+			(( i++ ))
+		done;
+    fi
+    if [ -f chapters.txt ]; then
+    	CHAPTER="--chapter-language ""$CHLANG"" --chapters chapters.txt"
+    fi
+return
+}
+
+do_subs(){ #TODO: fix subs order. Now, eng.srt comes before than spa.srt, alphabetically.
+	local ENC
+    local STOP
+    for i in *.srt; do
+        if [ "$i" == "*.srt" ]; then
+        	echo "Warning: No subtitles files found!"
+            echo "Is this is not intentational, remember that files must be .srt"
+            unset SUB_TRACKS
+        else
+        	ENC=$(file "$i" | awk '{print $2}')
+            if [ "$ENC" != "UTF-8" ] && [ "$ENC" != "ASCII" ]; then
+                echo "Please fix the encoding of the subtitle file: $i. It must be UTF-8 or ASCII"
+                echo "Hit Enter when done"
+                read -r STOP
+            fi
+        	VAR="${i/.srt/}"
+        	NAME=$(grep "$VAR" ~/.mymovlib/lang.lst | awk '{print $3}')
+        	SUB_TRACKS="$SUB_TRACKS --track-name 0:$NAME --default-track 0:0 --language 0:$VAR $i"
+        fi
+    done
+    return
+}
+
+do_mkv (){
+	local F1
+	do_audio
+	do_video
+    do_subs
+	if [ "$COVER" != false ]; then
+		do_covers
+	fi
+	do_chapt
+    if [ -z "$OUTPUT" ]; then
+    	OUTPUT="$TITLE ($YEAR).mkv"
+    fi
+	echo "* The parameters for your output file are..."
+    echo "- Title (year): $TITLE ($YEAR)"
+    echo -n "- Audio streams: "
+    echo "$(ls *.m4a | sed 's/.m4a//g' | sed 's/-/:/g' | tr '\r\n' ' ' | echo ' ')"
+    if [ -z "$LANG_ORDER" ]; then
+    	echo "The order of the audio streams was not set. The default will be used."
+    else
+    	echo "The order of the audio streams is $LANG_ORDER."
+    fi
+    echo "- Subtitle streams: $(ls *.srt | tr '\n' ' ' | sed 's/.m4a//g' | sed 's/-/:/g')"
+    echo "- Output file: $OUTPUT"
+    echo "If something is not OK hit any key to pause!"
+    echo -n "Waiting 5 seconds to continue"
+    unset x
+    for i in {1..4}; do
+    	echo -n "."
+        read -r -s -n1 -t1 x
+        if [ -n "$x" ]; then
+        	echo "Operation paused!"
+            echo "If you want to resume hit r to continue, or any other key to exit"
+            read -r -s -n1 x
+            if ! [[ $x =~ (r|R) ]]; then
+        		echo -e "\n$PROG: Operation cancelled by the user."
+            	echo "Temporary files were not deleted in case that you need them"
+            	exit 0
+            fi
+            echo "- resuming..."
+        fi
+    done
+    echo "."
+    MSG="Starting Matroska file integration..."
+    echo -n "* $MSG"
+    # Merge everything into the file
+
+    mkvmerge -o "$OUTPUT" --title "$TITLE" \
+    $COVERS \
+    $CHAPTER \
+    $VIDEO_TRACK \
+    $AUDIO_TRACKS \
+    $SUB_TRACKS > log.txt && F1=true || F1=false
+
+    if [ "$F1" == true ]; then
+    	s_print ${#MSG} 0
+        if [ "$LOG" != true ]; then rm -f log.txt; fi
+    else
+        s_print ${#MSG} 1
+        (>&2 echo -e "$PROG: Mastroka file merging failed!\n See log.txt for more info")
+        exit 1
+    fi
+
+    return
+}
+
+exit_err(){
+   	(>&2 echo -e "usage: $PROG [OPTION] input_file 'Movie Title' year")
+    (>&2 echo -e "Try '$PROG --help' for more information.")
+    exit 1
+}
+
+# Check the input parameters
+OPTS=$(getopt -o acChl:Lo:rp:v:V --long \
+no-audio-fix,no-covers,check,help,langs,\
+lang-list,output,chap-lang,record-log,video,version\
+ -n 'mymovlib' -- "$@")
+
+if [ $? != 0 ] ; then exit 1 ; fi
+
+eval set -- "$OPTS"
+while true; do
+	unset OPTIND
+  	case "$1" in
+    	-a | --no-audio-fix ) FIX_AUDIO=false; shift ;;
+    	-c | --no-covers ) COVER=false; shift ;;
+    	-C | --check ) check; shift ;;
+        -h | --help ) dohelp; break ;;
+        -l | --langs ) LANG_ORDER="$2"; shift 2; break ;;
+        -L | --lang-list ) langs; break ;;
+		-o | --output ) OUTPUT="$2"; shift 2 ;;
+		-p | --chap-lang ) CHLANG="$2"; shift 2 ;;
+		-r | --record-log ) LOG=true; shift 2 ;;
+		-v | --video ) VREENC="$2"; shift 2 ;;
+        -V | --version ) version; break ;;
+	    -- ) shift; break ;;
+    	* ) break ;;
+    esac
+done
+
+# Initial and important checks
+
+if [ -z "$1" ]; then
+	(>&2 echo -e "$PROG: Mandatory parameters were missing.")
+	exit_err
+fi
+
+for i in "$@"; do
+	if [ "$i" -eq "$i" ] 2>/dev/null; then
+    	YEAR="$i"
+    elif [ -f "$i" ]; then
+    	INPUT="$i"
+    else
+    	TITLE="$i"
+    fi
+done
+if [ -z "$YEAR" ]; then
+	(>&2 echo -e "$PROG: No year was provided.")
+	exit_err
+fi
+if [ -z "$INPUT" ] || ! [[ "$INPUT" =~ (.mp4|.mkv) ]]; then
+    (>&2 echo -e "$PROG: at least one valid input file must be given...""$INPUT"" must be MKV or MP4.")
+	exit_err
+fi
+if [ -z "$TITLE" ]; then
+	(>&2 echo -e "$PROG: No title was provided.")
+	exit_err
+else
+	echo "The input title and year were: $TITLE $YEAR"
+    echo "If it is not OK hit any key to abort!"
+    echo -n "Waiting 5 seconds to continue"
+    unset x
+    for i in {1..4}; do
+    	echo -n "."
+        read -r -s -n1 -t1 x
+        if [ -n "$x" ]; then
+        	echo -e "\n$PROG: Operation cancelled by the user."
+            echo "If the title is not what you typed, wrap it in quotes."
+            exit 0
+        fi
+    done
+    echo "."
+fi
+
+if [ ! -f ~/.mymovlib/lang.lst ]; then
+	check 0
+fi
+
+check_flags
+getinfo "$INPUT"
+do_mkv
+echo "* Ready to clean everything used to make the Matroska file."
+echo "- You can hit any key to abort"
+echo -n "- Waiting 5 seconds to continue"
+unset x
+for i in {1..4}; do
+	echo -n "."
+	read -r -s -n1 -t1 x
+	if [ -n "$x" ]; then
+		echo " $PROG: Operation cancelled by the user."
+        exit 0
+    fi
+done
+echo "."
+
+MSG="Removing temporary files..."
+echo -n "* $MSG"
+rm -f ./*.m4a && rm -f video.mp4 && rm -f ./cover*.jpg && rm -f ./new.cover*.jpg && \
+for i in old*; do mv "$i" "${i/old_/}"; done \
+2>> log.txt && F1=true || F1=false
+
+if [ "$F1" == true ]; then
+	s_print ${#MSG} 0
+	if [ "$LOG" != true ]; then rm -f log.txt; fi
+else
+	s_print ${#MSG} 1
+	(>&2 echo -e "$PROG: Something happened when removing temporary files.\nSee log.txt for more information.")
+	exit 1
+fi
+echo "* All set. Enjoy!"
+exit 0
