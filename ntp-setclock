@@ -1,26 +1,35 @@
 #!/usr/bin/openrc-run 
-# Shebang might be different in other distros (e.g., /sbin/openrc-run in devuan)
-# Salvador Pérez-Salgado - sep 29, 2021
+# Shebang has to be adjusted for other distros (e.g., /sbin/openrc-run in devuan, /usr/bin/openrc-run in artix)
+# Salvador Pérez-Salgado - Sep/29/2021
 # Distributed under the terms of the GNU General Public License v2
-# Needs ntpdate
+# Needs ntpdate (https://linux.die.net/man/8/ntpdate). Avaliable under different packages in many distros
 
 depend() {
+	# We want to get the date from the Internet
 	after net
 }
 
 start() {
 	ebegin "Setting clock via the NTP client"
 	$(NTP=0; \
+	# We are going to keep doing this until we are to connect \
 	while [ $NTP == 0 ]; \
-	 	do \
-			if ping -c 1 -n -w 1 8.8.8.8 &> /dev/null; then \
-				NTP=1 && ntpdate -b -s 0.gentoo.pool.ntp.org && einfo "[ntp] Done!. Current date is $(date)."; \
-			else sleep 5; \
-			fi; \
+	do \
+		# Test if we are connected to the Internet \
+		if ping -c 1 -n -w 1 8.8.8.8 &> /dev/null; then \
+			# We have Internt so we are not going to iterate again \
+			NTP=1 && \
+			# Set the date and time form Gentoo NTP servers \
+			ntpdate -b -s 0.gentoo.pool.ntp.org; \
+		else \
+			# If there is no Internet wait 5 sec and try again
+			sleep 5; \
+		fi; \
 	done) &
 	eend
 }
 
 stop(){
+	# There is nothing to do here
 	einfo "[ntp] All done"
 }
