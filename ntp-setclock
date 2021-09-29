@@ -13,7 +13,7 @@ start() {
 	ebegin "Setting clock via the NTP client"
 	$(NTP=0; \
 	# We are going to keep doing this until we are to connect \
-	while [ $NTP == 0 ]; \
+	while [ $NTP -eq 0 ]; \
 	do \
 		# Test if we are connected to the Internet \
 		if ping -c 1 -n -w 1 8.8.8.8 &> /dev/null; then \
