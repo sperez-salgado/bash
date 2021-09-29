@@ -1,6 +1,8 @@
-#!/usr/bin/openrc-run
-# Copyright 1999-2013 Gentoo Foundation
+#!/usr/bin/openrc-run 
+# Shebang might be different in other distros (e.g., /sbin/openrc-run in devuan)
+# Salvador Pérez-Salgado - sep 29, 2021
 # Distributed under the terms of the GNU General Public License v2
+# Needs ntpdate
 
 depend() {
 	after net
